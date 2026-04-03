@@ -9,71 +9,86 @@ app = FastAPI()
 # Load model once
 model = WhisperModel("base", device="cpu", compute_type="int8")
 
+# Global stopwatch state
+stopwatch_running = False
+stopwatch_start = None
+stopwatch_elapsed = 0.0
 
-def timed_step(label: str, func, *args, **kwargs):
-    """Helper to measure execution time of a function call."""
-    start = time.perf_counter()
-    result = func(*args, **kwargs)
-    elapsed = time.perf_counter() - start
-    print(f"[⏱️] {label} took {elapsed:.2f} sec")
-    return result, elapsed
+
+@app.post("/stopwatch/start")
+def start_stopwatch():
+    global stopwatch_running, stopwatch_start
+    stopwatch_running = True
+    stopwatch_start = time.perf_counter()
+    return {"message": "Stopwatch started"}
+
+
+@app.post("/stopwatch/stop")
+def stop_stopwatch():
+    global stopwatch_running, stopwatch_start, stopwatch_elapsed
+    if stopwatch_running:
+        stopwatch_elapsed += time.perf_counter() - stopwatch_start
+        stopwatch_running = False
+    return {"message": "Stopwatch stopped", "elapsed_sec": round(stopwatch_elapsed, 2)}
+
+
+@app.get("/stopwatch/status")
+def stopwatch_status():
+    global stopwatch_running, stopwatch_start, stopwatch_elapsed
+    if stopwatch_running:
+        current_elapsed = stopwatch_elapsed + (time.perf_counter() - stopwatch_start)
+    else:
+        current_elapsed = stopwatch_elapsed
+    return {
+        "running": stopwatch_running,
+        "elapsed_sec": round(current_elapsed, 2)
+    }
 
 
 @app.post("/whisper")
 async def transcribe_audio(file: UploadFile = File(...)):
-    # ⏱️ START TIMER
-    start_time = time.perf_counter()
-
     # Save file
-    save_start = time.perf_counter()
     temp_name = f"temp_{file.filename}"
     with open(temp_name, "wb") as f:
         f.write(await file.read())
-    upload_time = time.perf_counter() - save_start
-    print(f"[⏱️] File received in {upload_time:.2f} sec")
 
     # 🤖 TRANSCRIBE
-    (segments, _), transcribe_time = timed_step("Transcription", model.transcribe, temp_name)
+    transcribe_start = time.perf_counter()
+    segments, _ = model.transcribe(temp_name)
     text = " ".join([s.text for s in segments])
+    transcribe_time = time.perf_counter() - transcribe_start
 
     # 🧠 ENTITY EXTRACTION
-    def extract_entities(text: str):
-        words = text.split()
-        entities = [
-            w.strip(".,!?:")
-            for w in words
-            if len(w) > 3 and w[0].isupper()
-        ]
-        return list(set(entities))
-
-    unique_names, entity_time = timed_step("Entity Extraction", extract_entities, text)
+    words = text.split()
+    entities = [
+        w.strip(".,!?:")
+        for w in words
+        if len(w) > 3 and w[0].isupper()
+    ]
+    unique_names = list(set(entities))
 
     # 📝 SUMMARY
-    def build_summary(names, text):
-        summary = "### 💡 KEY NAMES & TOPICS:\n"
-        summary += ", ".join(names[:15])
-        summary += "\n\n### 📝 QUICK NOTES:\n"
-        summary += text[:400] + "..."
-        return summary
-
-    summary, summary_time = timed_step("Summary Generation", build_summary, unique_names, text)
-
-    # ⏱️ TOTAL TIME
-    total_time = time.perf_counter() - start_time
-    print(f"[✅] Total processing time: {total_time:.2f} sec")
+    summary = "### 💡 KEY NAMES & TOPICS:\n"
+    summary += ", ".join(unique_names[:15])
+    summary += "\n\n### 📝 QUICK NOTES:\n"
+    summary += text[:400] + "..."
 
     # Clean up
     os.remove(temp_name)
+
+    # Stopwatch status at the end
+    if stopwatch_running:
+        current_elapsed = stopwatch_elapsed + (time.perf_counter() - stopwatch_start)
+    else:
+        current_elapsed = stopwatch_elapsed
 
     return {
         "transcript": text,
         "summary": summary,
         "timing": {
-            "upload_time_sec": round(upload_time, 2),
             "transcription_time_sec": round(transcribe_time, 2),
-            "entity_extraction_time_sec": round(entity_time, 2),
-            "summary_time_sec": round(summary_time, 2),
-            "total_time_sec": round(total_time, 2)
+            "stopwatch_elapsed_sec": round(current_elapsed, 2),
+            "stopwatch_running": stopwatch_running
         }
     }
 
