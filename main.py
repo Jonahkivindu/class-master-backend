@@ -2,35 +2,71 @@ from fastapi import FastAPI, UploadFile, File
 from faster_whisper import WhisperModel
 import os
 import uvicorn
+import time
 
 app = FastAPI()
 
-# Load model once on startup to save time
-# 'base' is small enough for free cloud tiers
+# Load model once
 model = WhisperModel("base", device="cpu", compute_type="int8")
+
 
 @app.post("/whisper")
 async def transcribe_audio(file: UploadFile = File(...)):
-    # Save the incoming file from your phone
+    
+    # ⏱️ START TIMER
+    start_time = time.time()
+
+    # Save file
     temp_name = f"temp_{file.filename}"
     with open(temp_name, "wb") as f:
         f.write(await file.read())
-    
-    # Run Whisper AI
+
+    # ⏱️ RECORDING TIME (approx since upload started)
+    upload_time = time.time() - start_time
+    print(f"[⏱️] File received in {upload_time:.2f} sec")
+
+    # 🤖 TRANSCRIBE
+    transcribe_start = time.time()
     segments, _ = model.transcribe(temp_name)
     text = " ".join([s.text for s in segments])
-    
-    # Smart Extraction for Names (Jonah, Mark, Tatu)
+    transcribe_time = time.time() - transcribe_start
+
+    print(f"[🤖] Transcription took {transcribe_time:.2f} sec")
+
+    # 🧠 ENTITY EXTRACTION
     words = text.split()
-    entities = [w.strip(".,!?:") for w in words if len(w) > 3 and w[0].isupper()]
+    entities = [
+        w.strip(".,!?:") 
+        for w in words 
+        if len(w) > 3 and w[0].isupper()
+    ]
     unique_names = list(set(entities))
-    
-    # Create the summary points
-    summary = f"### 💡 KEY NAMES & TOPICS:\n" + ", ".join(unique_names[:15])
-    summary += f"\n\n### 📝 QUICK NOTES:\n" + text[:400] + "..."
-    
+
+    # 📝 SUMMARY
+    summary = "### 💡 KEY NAMES & TOPICS:\n"
+    summary += ", ".join(unique_names[:15])
+
+    summary += "\n\n### 📝 QUICK NOTES:\n"
+    summary += text[:400] + "..."
+
+    # ⏱️ TOTAL TIME
+    total_time = time.time() - start_time
+
+    print(f"[✅] Total processing time: {total_time:.2f} sec")
+
+    # Clean up
     os.remove(temp_name)
-    return {"transcript": text, "summary": summary}
+
+    return {
+        "transcript": text,
+        "summary": summary,
+        "timing": {
+            "upload_time_sec": round(upload_time, 2),
+            "transcription_time_sec": round(transcribe_time, 2),
+            "total_time_sec": round(total_time, 2)
+        }
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
