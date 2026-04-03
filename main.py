@@ -10,48 +10,56 @@ app = FastAPI()
 model = WhisperModel("base", device="cpu", compute_type="int8")
 
 
+def timed_step(label: str, func, *args, **kwargs):
+    """Helper to measure execution time of a function call."""
+    start = time.perf_counter()
+    result = func(*args, **kwargs)
+    elapsed = time.perf_counter() - start
+    print(f"[⏱️] {label} took {elapsed:.2f} sec")
+    return result, elapsed
+
+
 @app.post("/whisper")
 async def transcribe_audio(file: UploadFile = File(...)):
-    
     # ⏱️ START TIMER
-    start_time = time.time()
+    start_time = time.perf_counter()
 
     # Save file
+    save_start = time.perf_counter()
     temp_name = f"temp_{file.filename}"
     with open(temp_name, "wb") as f:
         f.write(await file.read())
-
-    # ⏱️ RECORDING TIME (approx since upload started)
-    upload_time = time.time() - start_time
+    upload_time = time.perf_counter() - save_start
     print(f"[⏱️] File received in {upload_time:.2f} sec")
 
     # 🤖 TRANSCRIBE
-    transcribe_start = time.time()
-    segments, _ = model.transcribe(temp_name)
+    (segments, _), transcribe_time = timed_step("Transcription", model.transcribe, temp_name)
     text = " ".join([s.text for s in segments])
-    transcribe_time = time.time() - transcribe_start
-
-    print(f"[🤖] Transcription took {transcribe_time:.2f} sec")
 
     # 🧠 ENTITY EXTRACTION
-    words = text.split()
-    entities = [
-        w.strip(".,!?:") 
-        for w in words 
-        if len(w) > 3 and w[0].isupper()
-    ]
-    unique_names = list(set(entities))
+    def extract_entities(text: str):
+        words = text.split()
+        entities = [
+            w.strip(".,!?:")
+            for w in words
+            if len(w) > 3 and w[0].isupper()
+        ]
+        return list(set(entities))
+
+    unique_names, entity_time = timed_step("Entity Extraction", extract_entities, text)
 
     # 📝 SUMMARY
-    summary = "### 💡 KEY NAMES & TOPICS:\n"
-    summary += ", ".join(unique_names[:15])
+    def build_summary(names, text):
+        summary = "### 💡 KEY NAMES & TOPICS:\n"
+        summary += ", ".join(names[:15])
+        summary += "\n\n### 📝 QUICK NOTES:\n"
+        summary += text[:400] + "..."
+        return summary
 
-    summary += "\n\n### 📝 QUICK NOTES:\n"
-    summary += text[:400] + "..."
+    summary, summary_time = timed_step("Summary Generation", build_summary, unique_names, text)
 
     # ⏱️ TOTAL TIME
-    total_time = time.time() - start_time
-
+    total_time = time.perf_counter() - start_time
     print(f"[✅] Total processing time: {total_time:.2f} sec")
 
     # Clean up
@@ -63,6 +71,8 @@ async def transcribe_audio(file: UploadFile = File(...)):
         "timing": {
             "upload_time_sec": round(upload_time, 2),
             "transcription_time_sec": round(transcribe_time, 2),
+            "entity_extraction_time_sec": round(entity_time, 2),
+            "summary_time_sec": round(summary_time, 2),
             "total_time_sec": round(total_time, 2)
         }
     }
